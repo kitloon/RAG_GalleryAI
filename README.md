@@ -13,6 +13,8 @@
 | 🔀 MMR Reranking | Maximal Marginal Relevance ensures diverse, non-redundant retrieval |
 | 🧠 Query Rewriting | Conversation memory rewrites follow-up questions for better retrieval |
 | 🚧 Strict Knowledge Boundary | System only answers from provided data — no hallucinations |
+| 🧾 Evidence Citations | Answers return confidence, source snippets, and page references when available |
+| 🔐 Admin Protection | Optional `X-Admin-Key` protects ingestion and source-management endpoints |
 | 🗑️ Source Management | List and delete individual sources from the knowledge base |
 | ⚡ Streaming Support | Optional streaming endpoint (`/query_stream`) for real-time text generation |
 
@@ -161,12 +163,14 @@ source venv/bin/activate
 
 ### 3. Set Up Environment Variables
 
-Create a `.env` file in the root directory:
+Copy `.env.example` to `.env`, then fill in your real OpenAI key:
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
 PERSIST_DIRECTORY=./data/chroma_db
 UPLOAD_DIRECTORY=./data/uploads
+API_PORT=8001
+API_BASE_URL=http://127.0.0.1:8001
 ```
 
 > ⚠️ **Never commit your `.env` file.** Make sure `.env` is listed in your `.gitignore`.
@@ -208,8 +212,8 @@ You need **two terminals** running simultaneously.
 python main.py
 ```
 
-The API will be available at: `http://127.0.0.1:8000`
-Interactive API docs (Swagger UI): `http://127.0.0.1:8000/docs`
+The API will be available at: `http://127.0.0.1:8001`
+Interactive API docs (Swagger UI): `http://127.0.0.1:8001/docs`
 
 **Terminal 2 — Start the Streamlit frontend:**
 
@@ -236,7 +240,7 @@ The app will open automatically at: `http://localhost:8501`
 
 ## 🔌 API Reference
 
-All endpoints are served from `http://127.0.0.1:8000`.
+All endpoints are served from `http://127.0.0.1:8001` by default.
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -247,6 +251,12 @@ All endpoints are served from `http://127.0.0.1:8000`.
 | `POST` | `/admin/ingest-url` | Scrape and ingest a URL |
 | `GET` | `/admin/sources` | List all ingested sources |
 | `DELETE` | `/admin/source` | Delete a source and all its chunks |
+
+If `ADMIN_API_KEY` is set, all `/admin/*` endpoints require:
+
+```http
+X-Admin-Key: your_admin_key
+```
 
 **Example `/query` request:**
 
@@ -263,7 +273,18 @@ POST /query
 {
   "answer": "The first Porsche model was the 356, introduced in 1948...",
   "topic": "Porsche History",
-  "sources": ["porsche_history.pdf"]
+  "sources": ["porsche_history.pdf"],
+  "confidence": 0.86,
+  "citations": [
+    {
+      "source": "porsche_history.pdf",
+      "page": 3,
+      "snippet": "The Porsche 356 was introduced in 1948...",
+      "score": 0.86
+    }
+  ],
+  "refined_question": "first Porsche model ever produced",
+  "needs_more_context": false
 }
 ```
 
@@ -276,6 +297,24 @@ POST /query
 | `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
 | `PERSIST_DIRECTORY` | `./data/chroma_db` | Where ChromaDB stores vectors |
 | `UPLOAD_DIRECTORY` | `./data/uploads` | Where uploaded PDFs are saved |
+| `API_HOST` | `0.0.0.0` | FastAPI bind host |
+| `API_PORT` | `8001` | FastAPI bind port |
+| `API_BASE_URL` | `http://127.0.0.1:8001` | Streamlit backend URL |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:8501,http://127.0.0.1:8501` | Allowed browser origins |
+| `ADMIN_API_KEY` | *(empty)* | Optional admin key for ingestion/source endpoints |
+| `MAX_UPLOAD_BYTES` | `10485760` | PDF upload size limit |
+| `REQUEST_TIMEOUT_SECONDS` | `30` | Streamlit API request timeout |
+| `MIN_RETRIEVAL_CONFIDENCE` | `0.45` | Low-confidence refusal threshold |
+
+---
+
+## ✅ Verification
+
+Run the local test suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 MMR retrieval parameters (editable in `rag_engine.py`):
 

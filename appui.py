@@ -1,8 +1,16 @@
+import os
+from html import escape
+
 import streamlit as st
 import requests
+from dotenv import load_dotenv
+from ui_helpers import admin_headers, confidence_label, render_citations_html
 
 # --- Configuration ---
-API_BASE_URL = "http://127.0.0.1:8000"
+load_dotenv()
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+ADMIN_HEADERS = admin_headers(os.getenv("ADMIN_API_KEY", ""))
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
 
 # --- Page Setup ---
 st.set_page_config(
@@ -269,6 +277,35 @@ html, body, [class*="css"] {
     border-color: #C8F06A33;
     background: #C8F06A08;
 }
+.meta-pill-warn {
+    color: #F0C36A;
+    border-color: #F0C36A33;
+    background: #F0C36A08;
+}
+
+/* ── Citations ── */
+.citation-wrap {
+    display: grid;
+    gap: 6px;
+    margin-top: 9px;
+}
+.citation-card {
+    border-left: 2px solid #C8F06A66;
+    background: #111115;
+    padding: 7px 9px;
+}
+.citation-meta {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.62rem;
+    color: #C8F06A;
+    margin-bottom: 3px;
+    letter-spacing: 0.04em;
+}
+.citation-snippet {
+    font-size: 0.75rem;
+    color: #888895;
+    line-height: 1.5;
+}
 
 /* ── Source item in sidebar ── */
 .src-item {
@@ -338,12 +375,17 @@ with st.sidebar:
             with st.spinner("Parsing…"):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
                 try:
-                    res = requests.post(f"{API_BASE_URL}/admin/ingest-pdf", files=files)
+                    res = requests.post(
+                        f"{API_BASE_URL}/admin/ingest-pdf",
+                        files=files,
+                        headers=ADMIN_HEADERS,
+                        timeout=REQUEST_TIMEOUT,
+                    )
                     if res.status_code == 200:
                         n = res.json().get("chunks_ingested", "?")
                         st.success(f"✓ {uploaded_file.name} — {n} chunks")
                     else:
-                        st.error("Ingestion failed.")
+                        st.error(f"Ingestion failed. ({res.status_code})")
                 except Exception as e:
                     st.error(f"Error: {e}")
         else:
@@ -358,12 +400,17 @@ with st.sidebar:
         if input_url:
             with st.spinner("Fetching…"):
                 try:
-                    res = requests.post(f"{API_BASE_URL}/admin/ingest-url", json={"url": input_url})
+                    res = requests.post(
+                        f"{API_BASE_URL}/admin/ingest-url",
+                        json={"url": input_url},
+                        headers=ADMIN_HEADERS,
+                        timeout=REQUEST_TIMEOUT,
+                    )
                     if res.status_code == 200:
                         n = res.json().get("chunks_ingested", "?")
                         st.success(f"✓ Indexed — {n} chunks")
                     else:
-                        st.error("Scraping failed.")
+                        st.error(f"Scraping failed. ({res.status_code})")
                 except Exception as e:
                     st.error(f"Error: {e}")
         else:
@@ -375,7 +422,11 @@ with st.sidebar:
     st.markdown('<span class="slabel">// Sources</span>', unsafe_allow_html=True)
     if st.button("Refresh →", key="btn_src"):
         try:
-            res = requests.get(f"{API_BASE_URL}/admin/sources")
+            res = requests.get(
+                f"{API_BASE_URL}/admin/sources",
+                headers=ADMIN_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
             st.session_state["kb_sources"] = res.json().get("sources", []) if res.status_code == 200 else []
         except:
             st.session_state["kb_sources"] = []
@@ -385,7 +436,7 @@ with st.sidebar:
         if srcs:
             for s in srcs:
                 label = s.split("/")[-1] if "/" in s else s
-                st.markdown(f'<div class="src-item"><span class="src-dot"></span>{label}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="src-item"><span class="src-dot"></span>{escape(label)}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="font-size:0.75rem;color:#33333D;padding:4px 0;">No sources yet.</div>', unsafe_allow_html=True)
 
@@ -418,7 +469,10 @@ if "messages" not in st.session_state:
         "role": "assistant",
         "content": "System ready. Upload a document or paste a URL in the sidebar to seed the knowledge base. Then ask anything.",
         "topic": None,
-        "sources": []
+        "sources": [],
+        "confidence": None,
+        "citations": [],
+        "needs_more_context": False,
     }]
 
 # ── History ──────────────────────────
@@ -428,12 +482,16 @@ for msg in st.session_state.messages:
         if msg["role"] == "assistant" and (msg.get("topic") or msg.get("sources")):
             pills = '<div class="meta-wrap">'
             if msg.get("topic"):
-                pills += f'<span class="meta-pill meta-pill-accent">{msg["topic"]}</span>'
+                pills += f'<span class="meta-pill meta-pill-accent">{escape(str(msg["topic"]))}</span>'
+            if msg.get("confidence") is not None:
+                cls = "meta-pill-warn" if msg.get("needs_more_context") else "meta-pill-accent"
+                pills += f'<span class="meta-pill {cls}">{escape(confidence_label(msg["confidence"]))}</span>'
             for s in (msg.get("sources") or []):
                 lbl = s.split("/")[-1] if "/" in s else s
-                pills += f'<span class="meta-pill">{lbl}</span>'
+                pills += f'<span class="meta-pill">{escape(lbl)}</span>'
             pills += '</div>'
             st.markdown(pills, unsafe_allow_html=True)
+            st.markdown(render_citations_html(msg.get("citations") or []), unsafe_allow_html=True)
 
 # ── Input ─────────────────────────────
 if prompt := st.chat_input("Query the knowledge base…"):
@@ -444,32 +502,46 @@ if prompt := st.chat_input("Query the knowledge base…"):
     with st.chat_message("assistant"):
         with st.spinner(""):
             try:
-                res = requests.post(f"{API_BASE_URL}/query", json={"question": prompt})
+                res = requests.post(
+                    f"{API_BASE_URL}/query",
+                    json={"question": prompt},
+                    timeout=REQUEST_TIMEOUT,
+                )
                 if res.status_code == 200:
                     data = res.json()
                     answer  = data.get("answer", "No answer returned.")
                     topic   = data.get("topic", "")
                     sources = data.get("sources", [])
+                    confidence = data.get("confidence")
+                    citations = data.get("citations", [])
+                    needs_more = data.get("needs_more_context", False)
 
                     st.markdown(answer)
 
-                    if topic or sources:
+                    if topic or sources or confidence is not None:
                         pills = '<div class="meta-wrap">'
                         if topic:
-                            pills += f'<span class="meta-pill meta-pill-accent">{topic}</span>'
+                            pills += f'<span class="meta-pill meta-pill-accent">{escape(str(topic))}</span>'
+                        if confidence is not None:
+                            cls = "meta-pill-warn" if needs_more else "meta-pill-accent"
+                            pills += f'<span class="meta-pill {cls}">{escape(confidence_label(confidence))}</span>'
                         for s in sources:
                             lbl = s.split("/")[-1] if "/" in s else s
-                            pills += f'<span class="meta-pill">{lbl}</span>'
+                            pills += f'<span class="meta-pill">{escape(lbl)}</span>'
                         pills += '</div>'
                         st.markdown(pills, unsafe_allow_html=True)
+                        st.markdown(render_citations_html(citations), unsafe_allow_html=True)
 
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
                         "topic": topic,
-                        "sources": sources
+                        "sources": sources,
+                        "confidence": confidence,
+                        "citations": citations,
+                        "needs_more_context": needs_more,
                     })
                 else:
-                    st.error("Engine unavailable. Try again later.")
+                    st.error(f"Engine unavailable. ({res.status_code})")
             except Exception as e:
                 st.error(f"Cannot reach backend. Is main.py running? ({e})")

@@ -1,4 +1,5 @@
 venv/
+.venv/
 tvenv/
 .env
 __pycache__/
